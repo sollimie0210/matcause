@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# 환경/비밀 (NFR-5)
+.env
+*.pem
+*.key
+
+# 데이터 (실데이터는 스크립트로 확보; 원본은 커밋하지 않음)
+data/secom/*.csv
+data/secom/*.data
+data/cache/*.json
+data/cache/*.parquet
+!data/secom/.gitkeep
+!data/cache/.gitkeep
+
+# DB
+*.db
+*.sqlite
+*.sqlite3
+
+# RAG 인덱스
+*.faiss
+*.index
+
+# IDE / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# 테스트/캐시
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

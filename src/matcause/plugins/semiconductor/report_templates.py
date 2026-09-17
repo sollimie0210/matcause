@@ -1,0 +1,221 @@
+"""리포트 템플릿 — Gap Analysis / OCAP (반도체) (T-200 초기 구현, US-D1/D2).
+
+ReportTemplate Protocol 구현. finding(MaterialFinding/ProcessFinding)과 근거(refs)를
+받아 구조화된 Report 를 생성한다. 모든 수치 주장은 Evidence ID 로 원본과 연결한다
+(추적성). 서술 문구는 근거 기반으로 작성하며, 근거 밖 수치는 만들지 않는다.
+
+여기서는 템플릿이 구조(원인/조치/검증/출처 + markdown)를 만든다. LLM 서술 보강은
+core.report_engine.ReportEngine 에서 이 구조를 입력으로 수행한다.
+"""
+
+from __future__ import annotations
+
+from matcause.core.models import (
+    Evidence,
+    IssueRequest,
+    MaterialFinding,
+    ProcessFinding,
+    Report,
+    ReportFormat,
+)
+
+
+def _evidence_lines(refs: list[Evidence]) -> list[str]:
+    lines = []
+    for e in refs:
+        val = "없음" if e.value is None else f"{e.value}{(' ' + e.unit) if e.unit else ''}"
+        ref = f" [{e.source_type.value}:{e.source_ref}]" if e.source_ref else f" [{e.source_type.value}]"
+        note = f" — {e.note}" if e.note else ""
+        lines.append(f"- ({e.id}) {val}{ref}{note}")
+    return lines
+
+
+def _material_actions(finding: MaterialFinding) -> tuple[list[str], list[str]]:
+    """리스크 수준에 따른 권장 조치/검증 실험."""
+    actions: list[str] = []
+    experiments: list[str] = []
+    if finding.risk_score >= 60:
+        actions.append("소재 물성이 주요 리스크로 판정됨: 대체 소재 검토를 우선한다.")
+        if finding.ranked_candidates:
+            top = finding.ranked_candidates[0]
+            actions.append(f"1순위 대체 후보 '{top.name}' 적용 타당성 검토.")
+        experiments.append("현재 소재와 상위 대체 후보의 전기적 특성 비교 실험.")
+    elif finding.risk_score >= 20:
+        actions.append("소재 리스크가 중간 수준: 공정 요인과 병행 검토 권장.")
+        experiments.append("동일 소재 로트 간 물성 편차 측정으로 소재/공정 요인 분리.")
+    else:
+        actions.append("소재 리스크 낮음: 공정 요인(3-B) 경로를 우선 조사 권장.")
+        experiments.append("공정 조건 재현 실험으로 불량 재현성 확인.")
+    if finding.ranked_candidates:
+        experiments.append(
+            "대체 후보의 결함/안정성 지표(energy_above_hull)를 실측/문헌으로 교차 검증."
+        )
+    return actions, experiments
+
+
+class GapAnalysisTemplate:
+    """요구 스펙 대비 현재 소재 능력의 격차를 정리하는 포맷."""
+
+    def render(self, finding, issue: IssueRequest, refs: list[Evidence]) -> Report:
+        cause, actions, experiments, sources = _build_common(finding)
+        md = _render_markdown("Gap Analysis", issue, finding, cause, actions, experiments, refs)
+        return Report(
+            cause=cause,
+            evidences=refs,
+            recommended_actions=actions,
+            recommended_experiments=experiments,
+            sources=sources,
+            format=ReportFormat.GAP,
+            markdown=md,
+        )
+
+
+class OcapTemplate:
+    """원인 → 조치 → 검증(Out of Control Action Plan) 포맷."""
+
+    def render(self, finding, issue: IssueRequest, refs: list[Evidence]) -> Report:
+        cause, actions, experiments, sources = _build_common(finding)
+        md = _render_markdown("OCAP", issue, finding, cause, actions, experiments, refs)
+        return Report(
+            cause=cause,
+            evidences=refs,
+            recommended_actions=actions,
+            recommended_experiments=experiments,
+            sources=sources,
+            format=ReportFormat.OCAP,
+            markdown=md,
+        )
+
+
+def _build_common(finding):
+    sources: list[str] = []
+    if isinstance(finding, MaterialFinding):
+        cause = finding.summary or f"소재 리스크 {finding.risk_score}/100"
+        actions, experiments = _material_actions(finding)
+        for e in finding.evidences:
+            if e.url:
+                sources.append(e.url)
+            elif e.source_ref:
+                sources.append(f"{e.source_type.value}:{e.source_ref}")
+    elif isinstance(finding, ProcessFinding):
+        cause = finding.summary or f"이상 변수 {len(finding.anomalous_vars)}건"
+        actions = ["규명된 이상 변수의 공정 파라미터를 점검한다."]
+        experiments = ["이상 변수 구간의 공정 조건 재현/교정 실험."]
+    else:
+        cause = "판정 근거 부족"
+        actions = []
+        experiments = []
+    # 중복 제거, 순서 유지
+    sources = list(dict.fromkeys(sources))
+    return cause, actions, experiments, sources
+
+
+def _render_markdown(kind, issue, finding, cause, actions, experiments, refs) -> str:
+    lines = [f"# MatCause 리포트 ({kind})", ""]
+    lines.append(f"## 이슈\n{issue.combined_text()}\n")
+    lines.append("## 판정 원인")
+    lines.append(cause + "\n")
+
+    if isinstance(finding, MaterialFinding):
+        lines.append("## 리스크 스코어")
+        lines.append(f"- 종합: **{finding.risk_score}/100**")
+        for k, v in finding.breakdown.items():
+            lines.append(f"  - {k}: {v}")
+        lines.append("")
+        if finding.ranked_candidates:
+            lines.append("## 대체 소재 후보 (랭킹)")
+            for i, c in enumerate(finding.ranked_candidates, 1):
+                suit = (c.metrics or {}).get("suitability")
+                suit_badge = " ⚠️적합도 낮음" if suit == "적합도 낮음" else ""
+                lines.append(
+                    f"{i}. **{c.name}**{suit_badge} (리스크 {c.score}) — {c.improvement or ''}"
+                    + (f" / 트레이드오프: {c.tradeoffs}" if c.tradeoffs else "")
+                )
+            lines.append("")
+
+    lines.append("## 권장 조치")
+    lines += [f"- {a}" for a in actions] or ["- (없음)"]
+    lines.append("\n## 권장 검증 실험")
+    lines += [f"- {e}" for e in experiments] or ["- (없음)"]
+    lines.append("\n## 근거 (Evidence)")
+    lines += _evidence_lines(refs) or ["- (없음)"]
+    return "\n".join(lines)
+
+
+class CustomerReportTemplate:
+    """고객사 제출용 — 근거 ID 없이 요약/원인/리스크/대체후보/조치 중심.
+
+    본문에는 Evidence ID 를 노출하지 않고 '상세 근거는 부록(상세 리포트) 참고'로 안내한다.
+    (근거 데이터 자체는 Report.evidences 에 그대로 보관 → 상세 리포트/부록에서 활용)
+    """
+
+    def render(self, finding, issue: IssueRequest, refs: list[Evidence]) -> Report:
+        cause, actions, experiments, sources = _build_common(finding)
+        md = _render_customer_markdown(issue, finding, cause, actions, experiments)
+        return Report(
+            cause=cause,
+            evidences=refs,  # 근거는 보관하되 본문에는 미노출
+            recommended_actions=actions,
+            recommended_experiments=experiments,
+            sources=sources,
+            format=ReportFormat.CUSTOMER,
+            markdown=md,
+        )
+
+
+def _render_customer_markdown(issue, finding, cause, actions, experiments) -> str:
+    lines = ["# 결함 원인 분석 리포트 (고객사 제출용)", ""]
+    lines.append("## 1. 개요")
+    lines.append(issue.combined_text() + "\n")
+
+    lines.append("## 2. 판정 원인")
+    lines.append(cause + "\n")
+
+    if isinstance(finding, MaterialFinding):
+        lines.append("## 3. 소재 리스크 평가")
+        level = (
+            "높음" if finding.risk_score >= 60
+            else "중간" if finding.risk_score >= 20
+            else "낮음"
+        )
+        lines.append(f"- 소재 리스크: **{finding.risk_score}/100 ({level})**")
+        # 지표는 사람이 읽기 쉬운 이름으로 요약(수치 ID 없이)
+        label = {
+            "energy_above_hull": "구조 안정성",
+            "formation_energy_per_atom": "형성 에너지",
+            "is_stable": "열역학적 안정",
+            "application_suitability": "응용 적합성",
+        }
+        for k, v in finding.breakdown.items():
+            lines.append(f"  - {label.get(k, k)}: {v}/100")
+        lines.append("")
+
+        if finding.ranked_candidates:
+            lines.append("## 4. 대체 소재 제안")
+            for i, c in enumerate(finding.ranked_candidates, 1):
+                suit = (c.metrics or {}).get("suitability", "")
+                badge = " (응용 적합도 낮음)" if suit == "적합도 낮음" else ""
+                lines.append(f"{i}. **{c.name}**{badge} — {c.improvement or ''}")
+                if c.tradeoffs:
+                    lines.append(f"   - 참고: {c.tradeoffs}")
+            lines.append("")
+
+    lines.append("## 5. 권장 조치")
+    lines += [f"- {a}" for a in actions] or ["- (없음)"]
+    lines.append("\n## 6. 권장 검증 실험")
+    lines += [f"- {e}" for e in experiments] or ["- (없음)"]
+
+    lines.append("\n---")
+    lines.append("*상세 정량 근거(Materials Project 물성값, 문헌 인용 등)는 별첨 '상세 리포트'를 참고하십시오.*")
+    return "\n".join(lines)
+
+
+def get_template(kind: str):
+    kind = (kind or "").upper()
+    if kind == "GAP":
+        return GapAnalysisTemplate()
+    if kind == "OCAP":
+        return OcapTemplate()
+    if kind == "CUSTOMER":
+        return CustomerReportTemplate()
+    raise ValueError(f"알 수 없는 리포트 종류: {kind}")

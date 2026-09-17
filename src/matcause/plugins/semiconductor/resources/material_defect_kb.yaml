@@ -1,0 +1,15 @@
+# 소재-결함 지식베이스 seed (T-201, US-B/D)
+#
+# 데이터 정직성 원칙: 모든 항목은 실존 공개 문헌/DB 출처를 가진다.
+# 출처 URL/DOI가 없는 항목은 추가하지 않는다.
+#
+# 형식:
+#   - id: <고유 id>
+#     topic: <주제>
+#     claim: <근거 서술(재구성)>
+#     source_type: LITERATURE | MP
+#     source_ref: <DOI 또는 mp-id>
+#     url: <원문 URL>
+
+entries: []
+# 스프린트 2(T-201)에서 공개 문헌 인용으로 채운다.

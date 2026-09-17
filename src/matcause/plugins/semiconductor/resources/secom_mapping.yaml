@@ -1,0 +1,16 @@
+# SECOM 변수 → 설비/공정 파라미터 매핑 (사용자 편집 가능, T-202, US-C2)
+#
+# SECOM 데이터셋의 590개 변수는 익명화되어 있어 물리적 의미가 공개되어 있지 않다.
+# 따라서 이 매핑은 "가정/추정"이며, 근거가 없는 항목은 비워 둔다.
+# 매핑이 없는 변수는 리포트에서 '통계 이상만 확인(원인 미매핑)'으로 표기된다.
+#
+# 형식:
+#   feature_index: { equipment: <설비>, parameter: <파라미터>, source: <근거/추정>, note: <비고> }
+
+mappings: {}
+# 예시(실제 근거 확보 시에만 채울 것):
+#   102:
+#     equipment: "etch_chamber_A"
+#     parameter: "RF_power"
+#     source: "team-hypothesis"   # 공개 근거가 아니면 명시
+#     note: "통계적으로 Fail과 강한 연관, 물리 매핑은 미확정"
