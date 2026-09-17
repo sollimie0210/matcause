@@ -53,6 +53,40 @@ def _material_actions(finding: MaterialFinding) -> tuple[list[str], list[str]]:
     return actions, experiments
 
 
+def _process_actions(finding: ProcessFinding) -> tuple[list[str], list[str]]:
+    """이상 변수 규명 결과에 따른 권장 조치/검증 실험 (US-C1/C2)."""
+    actions: list[str] = []
+    experiments: list[str] = []
+    n = len(finding.anomalous_vars)
+    top = [v for v in finding.anomalous_vars[:5]]
+
+    # 매핑된 원인이 있는지 확인
+    mapped = {
+        k: v for k, v in finding.cause_mappings.items()
+        if v and not v.startswith("미매핑")
+    }
+    if n == 0:
+        actions.append("유의한 이상 변수가 없어 공정 파라미터 단독 원인은 낮음: 소재 경로 병행 검토.")
+        experiments.append("불량 재현 실험으로 산발/재현성 여부 확인.")
+        return actions, experiments
+
+    actions.append(
+        f"통계적으로 유의한 이상 변수 {n}개(효과크기 상위: {', '.join(top)})의 "
+        "해당 공정 파라미터·센서를 우선 점검한다."
+    )
+    if mapped:
+        for feat, cause in list(mapped.items())[:3]:
+            actions.append(f"{feat} → {cause}: 관련 설비/레시피 조건 교정 검토.")
+    else:
+        actions.append(
+            "SECOM 변수는 익명이라 물리 원인 미매핑: 상위 이상 변수를 실제 센서/"
+            "파라미터에 매핑(secom_mapping.yaml)한 뒤 원인 규명을 이어간다."
+        )
+    experiments.append("상위 이상 변수 구간에서 Pass/Fail 로트의 공정 조건을 재현·비교한다.")
+    experiments.append("이상 변수와 실제 계측값의 상관을 확인해 매핑 가설을 검증한다.")
+    return actions, experiments
+
+
 class GapAnalysisTemplate:
     """요구 스펙 대비 현재 소재 능력의 격차를 정리하는 포맷."""
 
@@ -98,9 +132,13 @@ def _build_common(finding):
             elif e.source_ref:
                 sources.append(f"{e.source_type.value}:{e.source_ref}")
     elif isinstance(finding, ProcessFinding):
+        actions, experiments = _process_actions(finding)
         cause = finding.summary or f"이상 변수 {len(finding.anomalous_vars)}건"
-        actions = ["규명된 이상 변수의 공정 파라미터를 점검한다."]
-        experiments = ["이상 변수 구간의 공정 조건 재현/교정 실험."]
+        for e in finding.evidences:
+            if e.url:
+                sources.append(e.url)
+            elif e.source_ref:
+                sources.append(f"{e.source_type.value}:{e.source_ref}")
     else:
         cause = "판정 근거 부족"
         actions = []
@@ -132,6 +170,33 @@ def _render_markdown(kind, issue, finding, cause, actions, experiments, refs) ->
                     + (f" / 트레이드오프: {c.tradeoffs}" if c.tradeoffs else "")
                 )
             lines.append("")
+
+    if isinstance(finding, ProcessFinding):
+        st = finding.stats or {}
+        lines.append("## 이상 변수 규명 (통계)")
+        lines.append(
+            f"- 검정: {st.get('test', '그룹 검정')} + "
+            f"{st.get('fdr_method', 'FDR')}(q={st.get('fdr_q', '?')})"
+        )
+        lines.append(
+            f"- Pass/Fail: {st.get('n_pass', '?')} / {st.get('n_fail', '?')} "
+            f"(약 1:{st.get('imbalance_ratio', '?')} 불균형)"
+        )
+        lines.append(f"- 유의 이상 변수: **{len(finding.anomalous_vars)}개**")
+        top_vars = st.get("top_vars", [])
+        if top_vars:
+            lines.append("\n| 변수 | p_adj | Cohen d | 방향 | 원인 매핑 |")
+            lines.append("|---|---|---|---|---|")
+            dir_kr = {"higher_in_fail": "불량군↑", "lower_in_fail": "불량군↓"}
+            for tv in top_vars:
+                feat = tv["feature"]
+                cause = finding.cause_mappings.get(feat, "미매핑")
+                cause_short = "미매핑" if cause.startswith("미매핑") else cause
+                lines.append(
+                    f"| {feat} | {tv['p_adj']:.2e} | {tv['cohens_d']:.3f} | "
+                    f"{dir_kr.get(tv['direction'], tv['direction'])} | {cause_short} |"
+                )
+        lines.append("")
 
     lines.append("## 권장 조치")
     lines += [f"- {a}" for a in actions] or ["- (없음)"]

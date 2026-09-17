@@ -25,33 +25,20 @@ src/matcause/
 
 ## 요구 환경
 
-- **소재/공정/RAG 트랙: Python 3.12 필수.** pymatgen · faiss-cpu · scikit-learn ·
-  scipy 등은 3.12 휠은 제공되지만 최신 3.14 휠은 아직 없다. 이 트랙 작업자는
-  반드시 3.12 가상환경을 사용한다.
-- 코어/UI 트랙만 다룬다면 3.12+ 어느 버전이든 무방하다(코어 의존성은 3.14 휠도 존재).
 - AWS Bedrock 접근 권한 (Claude 계열 모델 활성화)
 - Materials Project API 키
 
-### 검증된 가상환경 (OneDrive 밖, 로컬 경로)
+### 검증된 가상환경
 
-| 용도 | 경로 | Python | 설치 extras |
-|---|---|---|---|
-| 소재/공정/RAG 트랙 (권장 기본) | `C:\Users\<사용자>\matcause_venv312` | 3.12 | `materials,process,rag,dev` |
-| 코어/UI 전용 | `C:\Users\<사용자>\matcause_venv` | 3.14 | `dev` |
-
-두 venv 모두 `pytest` 통과를 확인했다. 소재/공정 패키지가 필요하면 3.12 venv를 쓴다.
+워크스페이스 내 `.venv`(Python 3.14)에 `-e ".[all,dev]"`를 설치해 `pytest`
+전체 통과 및 실제 pymatgen 연산 동작을 확인했다. 소재/공정/RAG 패키지
+(pymatgen, faiss-cpu, scikit-learn, scipy 등)도 이 환경에 함께 설치돼 있다.
 
 ## 설치
 
-> ⚠️ **OneDrive 주의**: 이 폴더가 OneDrive 동기화 경로에 있으면 `.venv`를 폴더
-> 안에 만들 때 동기화 프로세스가 파일을 잠가 `pip install`이 `WinError 32`로
-> 실패할 수 있다. 가상환경은 **OneDrive 밖 경로**에 만들 것을 권장한다.
-> 예: `python -m venv C:\Users\<사용자>\matcause_venv`
-
 ```powershell
-# 소재/공정 트랙용 3.12 가상환경 (OneDrive 밖 경로)
-py -3.12 -m venv C:\Users\$env:USERNAME\matcause_venv312
-& "C:\Users\$env:USERNAME\matcause_venv312\Scripts\Activate.ps1"
+python -m venv .venv
+& .\.venv\Scripts\Activate.ps1
 
 # 코어만 설치
 pip install -e .

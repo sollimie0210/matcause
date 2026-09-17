@@ -44,7 +44,10 @@ class SemiconductorPlugin:
     def process_analyzer(self):
         from .process_analyzer import SecomProcessAnalyzer
 
-        return SecomProcessAnalyzer()
+        s = self._get_settings()
+        return SecomProcessAnalyzer(
+            data_dir=getattr(s, "secom_data_dir", "data/secom")
+        )
 
     def knowledge_base(self):
         from .knowledge_base import SemiconductorKnowledgeBase
