@@ -12,6 +12,7 @@ import os
 from functools import lru_cache
 
 from .core.llm.base import LLMClient
+from .core.llm.gateway_client import BedrockGatewayLLMClient
 from .core.llm.mock_client import MockLLMClient
 from .core.models import Diagnosis, IssueRequest, Report, TriageCategory
 from .core.orchestrator import Orchestrator
@@ -39,7 +40,38 @@ def _load_env() -> None:
 
 
 def build_llm() -> LLMClient:
-    """LLM 구현체 생성 지점. 실제 Bedrock 연동 시 여기만 교체(T-100)."""
+    """LLM 구현체 생성 지점 (T-100).
+
+    LLM_PROVIDER 설정으로 백엔드를 전환한다:
+    - "gateway": 주최 측 OpenAI 호환 Bedrock 게이트웨이(BedrockGatewayLLMClient)
+    - 그 외/실패: MockLLMClient (개발/테스트, 외부 호출 없음)
+
+    게이트웨이 선택 시 API_KEY 가 없거나 openai 미설치면 안전하게 Mock 으로 폴백한다.
+    """
+    try:
+        from .core.config import get_settings
+
+        settings = get_settings()
+    except Exception:  # noqa: BLE001
+        return MockLLMClient()
+
+    if settings.llm_provider.strip().lower() == "gateway":
+        api_key = settings.api_key or os.environ.get("API_KEY")
+        if not api_key:
+            print("[MatCause] LLM_PROVIDER=gateway 이지만 API_KEY 가 없어 Mock 으로 폴백합니다.")
+            return MockLLMClient()
+        try:
+            return BedrockGatewayLLMClient(
+                base_url=settings.gateway_base_url,
+                api_key=api_key,
+                model=settings.gateway_model,
+                fallback_model=settings.gateway_fallback_model,
+                verify_ssl=settings.gateway_verify_ssl,
+            )
+        except Exception as exc:  # noqa: BLE001 - 생성 실패 시 Mock 폴백
+            print(f"[MatCause] 게이트웨이 클라이언트 생성 실패({exc}), Mock 으로 폴백합니다.")
+            return MockLLMClient()
+
     return MockLLMClient()
 
 
@@ -68,6 +100,10 @@ class DiagnosisService:
 
     def get(self, diagnosis_id: str) -> Diagnosis | None:
         return self._store.get(diagnosis_id)
+
+    def list_all(self) -> list[Diagnosis]:
+        """보관된 모든 진단을 최신순으로 반환한다."""
+        return sorted(self._store.values(), key=lambda d: d.created_at, reverse=True)
 
     def build_customer_report(self, diagnosis_id: str) -> Report | None:
         """저장된 진단으로부터 고객사 제출용 리포트를 생성한다(근거 ID 미노출)."""

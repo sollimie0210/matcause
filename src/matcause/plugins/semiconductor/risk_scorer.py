@@ -90,23 +90,65 @@ def _application_suitability_score(
 ) -> tuple[float, str]:
     """band_gap 이 응용 요구 범위를 벗어난 정도를 0~100 리스크로 환산.
 
-    범위 안이면 0. 벗어나면 대표 목표값 대비 상대 편차에 비례(50% 편차 ≈ 100).
+    설계:
+      - 범위 안이면 0.
+      - 범위 밖이면, **가장 가까운 경계로부터의 거리**를 **범위 폭** 대비 비율로
+        계산(range-relative deviation). 이전 midpoint 대비 방식은 범위 경계 근처
+        에서 과도하게 높은 편차를 냈음 (예: bg=2.2, 하한=2.3이면 0.1eV 밖인데
+        midpoint 4.4 대비 50% 편차 → 100점이 됨. 실제로는 범위 폭 4.2 대비
+        2.4% 밖일 뿐).
+      - 경계에서 급격히 튀지 않도록 **부드러운 증가** 적용:
+        score = clamp( (distance / range_width) / margin_frac * 100 )
+        margin_frac = 0.3 이면 범위 폭의 30% 벗어날 때 100점.
+        범위 경계에서 0, 경계 밖으로 갈수록 선형 증가 → 자연스러움.
     """
+    MARGIN_FRAC = 0.3  # 범위 폭의 30% 밖 → 리스크 100
+
     if bg is None:
         return 0.0, "band_gap 없음 → 응용 적합성 평가 불가"
+
+    lo = profile.band_gap_min
+    hi = profile.band_gap_max
+
+    # 범위 안이면 적합
     if profile.band_gap_in_range(bg):
         return 0.0, f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 범위 내 → 적합"
-    target = profile.band_gap_target()
-    if target and target > 0:
-        rel_dev = abs(bg - target) / target
-        score = _clamp(rel_dev / 0.5 * 100.0)  # 목표 대비 50% 편차면 100
+
+    # 범위 폭 계산 (한쪽만 있으면 대표값 기준 ±50% 를 가상 범위로)
+    if lo is not None and hi is not None:
+        span = hi - lo
+    elif lo is not None:
+        span = lo   # 단측: 하한만 → 하한 자체를 범위 스케일로
+    elif hi is not None:
+        span = hi
     else:
-        score = 100.0
-        rel_dev = 1.0
+        span = 1.0  # 둘 다 없으면 불가 (이론상 도달 안 함)
+
+    if span <= 0:
+        span = 1.0
+
+    # 가장 가까운 경계로부터의 거리
+    if lo is not None and bg < lo:
+        distance = lo - bg
+        boundary = lo
+    elif hi is not None and bg > hi:
+        distance = bg - hi
+        boundary = hi
+    else:
+        distance = 0.0
+        boundary = bg
+
+    margin = span * MARGIN_FRAC
+    if margin <= 0:
+        margin = 1.0
+
+    score = _clamp(distance / margin * 100.0)
+    pct = distance / span * 100.0
+
     return score, (
         f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 "
-        f"[{profile.band_gap_min}~{profile.band_gap_max}] 벗어남 "
-        f"(목표 대비 편차 {rel_dev*100:.0f}%) → 응용 적합성 리스크"
+        f"[{lo}~{hi}] 경계({boundary})에서 {distance:.2f} eV 벗어남 "
+        f"(범위 폭 {span:.1f} 대비 {pct:.1f}%) → 적합성 리스크 {score:.0f}/100"
     )
 
 

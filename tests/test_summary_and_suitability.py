@@ -63,11 +63,11 @@ def test_detect_none_when_no_app_keyword():
 
 
 def test_narrow_bandgap_material_risky_for_power():
-    # GaAs(band_gap 0.19)는 안정하지만 파워 응용엔 밴드갭이 너무 좁다 → 리스크 상승
+    # GaAs(band_gap 1.42)는 안정하지만 파워 응용엔 밴드갭이 좁다 → 리스크 상승
     gaas = {
         "material_id": "mp-2534", "formula_pretty": "GaAs",
         "formation_energy_per_atom": -0.45, "energy_above_hull": 0.0,
-        "band_gap": 0.19, "is_stable": True,
+        "band_gap": 1.42, "is_stable": True,
     }
     base = score_material(gaas)
     power = score_material(gaas, profile=PROFILES["power"])
@@ -98,7 +98,7 @@ _SRC_GAN = {
 _CAND_GAAS = {
     "material_id": "mp-2534", "formula_pretty": "GaAs",
     "formation_energy_per_atom": -0.45, "energy_above_hull": 0.0,
-    "band_gap": 0.19, "is_stable": True,  # 편차 >50%
+    "band_gap": 1.42, "is_stable": True,  # 파워 범위[2.0~6.5] 이탈
 }
 _CAND_ALN = {
     "material_id": "mp-661", "formula_pretty": "AlN",
@@ -129,13 +129,13 @@ def test_ranking_excludes_unfit_when_requested():
 
 
 def test_profile_range_is_priority_over_source_deviation():
-    # source = GaAs(0.19). 프로파일(power)이 있으면 '요구 범위' 기준으로 판정:
-    #  - AlN(4.05)은 power 범위[2.3~6.5] 내 → 적합 (source 대비 편차는 크지만 무시)
+    # source = GaAs(1.42). 프로파일(power)이 있으면 '요구 범위' 기준으로 판정:
+    #  - AlN(4.05)은 power 범위[2.0~6.5] 내 → 적합 (source 대비 편차는 크지만 무시)
     #  - InN(0.0)은 범위 이탈 → 적합도 낮음
     src_gaas = {
         "material_id": "mp-2534", "formula_pretty": "GaAs",
         "formation_energy_per_atom": -0.45, "energy_above_hull": 0.0,
-        "band_gap": 0.19, "is_stable": True,
+        "band_gap": 1.42, "is_stable": True,
     }
     inn = {
         "material_id": "mp-22205", "formula_pretty": "InN",

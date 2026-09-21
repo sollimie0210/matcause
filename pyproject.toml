@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "python-dotenv>=1.0",
     "boto3>=1.34",            # AWS Bedrock (bedrock-runtime)
+    "openai>=1.40",           # OpenAI 호환 Bedrock 게이트웨이 클라이언트 (T-100)
     "streamlit>=1.36",        # 데모 대시보드
     "pandas>=2.2",
     "numpy>=1.26",

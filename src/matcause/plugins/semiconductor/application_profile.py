@@ -41,10 +41,10 @@ class ApplicationProfile:
 PROFILES: dict[str, ApplicationProfile] = {
     "power": ApplicationProfile(
         name="power",
-        band_gap_min=2.3,   # 와이드 밴드갭(SiC/GaN 급) 지향
-        band_gap_max=6.5,
+        band_gap_min=2.0,   # 와이드 밴드갭(SiC ≈3.3, GaN ≈3.4) 지향. 2.0으로 마진 확보
+        band_gap_max=6.5,   # AlN≈6.0, diamond≈5.5 포함
         band_gap_critical=True,
-        note="파워 소자: 고전압/저손실 위해 와이드 밴드갭 요구",
+        note="파워 소자: 고전압/저손실 위해 와이드 밴드갭 요구 (SiC/GaN/AlN/Ga2O3)",
     ),
     "led": ApplicationProfile(
         name="led",

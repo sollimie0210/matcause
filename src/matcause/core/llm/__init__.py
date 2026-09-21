@@ -9,6 +9,7 @@
 """
 
 from .base import LLMClient, LLMMessage, LLMResponse, assistant, system, user
+from .gateway_client import BedrockGatewayLLMClient
 from .mock_client import MockLLMClient, extract_json
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "LLMMessage",
     "LLMResponse",
     "MockLLMClient",
+    "BedrockGatewayLLMClient",
     "extract_json",
     "system",
     "user",
