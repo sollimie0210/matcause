@@ -20,10 +20,19 @@ from typing import Any
 from matcause.core.models import Evidence, EvidenceSource, RankedCandidate
 
 from .application_profile import ApplicationProfile
-from .risk_scorer import score_material
+from .risk_scorer import (
+    _application_suitability_score,
+    _source_relative_suitability_score,
+    score_material,
+)
 
-# 밴드갭 편차 한계(응용 적합성 필터). source 대비 이 비율 이상 벗어나면 부적합 취급.
-DEFAULT_BG_DEVIATION_LIMIT = 0.5  # 50%
+# 적합성 리스크(0~100)가 이 값을 넘으면 '적합도 낮음'으로 표기.
+# 계단식 하드컷이 아니라, 공통 커널의 완만한 점수 위에 두는 표기 임계값이다.
+SUITABILITY_UNFIT_THRESHOLD = 50.0
+
+# (레거시 파라미터 — 시그니처 호환용으로만 유지. 현재 판정은 완만한 적합성 점수 기반이며
+#  이 하드컷 비율은 더 이상 적합/부적합 결정에 쓰이지 않는다.)
+DEFAULT_BG_DEVIATION_LIMIT = 0.5  # 50% (deprecated: 완만 스코어로 대체됨)
 
 # 물질군별 대체 후보 shortlist (도메인 지식; 실제 MP 로 조회해 검증됨).
 # 여기 값은 '후보 화학식'일 뿐, 물성 수치는 전부 MP 라이브/캐시에서 온다(합성 금지).
@@ -38,7 +47,9 @@ GROUP_ALTERNATIVES: dict[str, list[str]] = {
 # 랭킹 정렬 기준 설명 (리포트 표기용)
 RANK_BASIS = (
     "리스크 스코어(안정성 프록시 + 응용 적합성) 오름차순. "
-    "원본 대비 band_gap 편차가 큰 후보는 응용 적합도 낮음으로 표기/후순위."
+    "응용 적합성은 응용 프로파일 요구 범위(감지 시) 또는 원본 대비 허용밴드(폴백) "
+    "경계로부터의 완만한 편차로 산정하며, 적합성 리스크가 큰 후보는 '적합도 낮음'으로 "
+    "표기/후순위 처리한다(계단식 하드컷 아님)."
 )
 
 
@@ -109,25 +120,20 @@ def rank_alternatives(
         risk = score_material(cand, profile=profile)
         improvement = round(src_risk - risk.score, 1)
         cand_bg = cand.get("band_gap")
+        dev = _bg_deviation(src_bg, cand_bg)  # 참고용 상대편차(표기/정렬 보조)
 
-        # 응용 적합성 판정:
-        # - 프로파일이 있으면 '응용 요구 band_gap 범위 이탈'을 우선 기준으로 삼는다.
-        #   (예: 파워 응용에서 AlN 은 범위 내 → 적합. source 대비 편차는 부차적.)
-        # - 프로파일이 없으면 source 대비 band_gap 편차로 판정한다.
-        dev = _bg_deviation(src_bg, cand_bg)
-        unfit_reason: str | None = None
+        # 응용 적합성 판정 — 두 경로가 **동일한 완만 커널**을 공유한다:
+        # - 프로파일이 있으면 응용 요구 범위 경계 대비 편차(_application_suitability_score).
+        # - 프로파일이 없으면(폴백) 원본 band_gap 주변 허용밴드 경계 대비 편차
+        #   (_source_relative_suitability_score). 둘 다 경계에서 완만히 증가하는 0~100 점수라
+        #   50% 하드컷 계단식이 사라진다.
         if profile is not None:
-            if cand_bg is not None and not profile.band_gap_in_range(cand_bg):
-                unfit_reason = (
-                    f"응용({profile.name}) 요구 band_gap "
-                    f"[{profile.band_gap_min}~{profile.band_gap_max}] 이탈 (후보 {cand_bg:.2f} eV)"
-                )
+            suit_risk, suit_reason = _application_suitability_score(cand_bg, profile)
         else:
-            if dev is not None and dev > bg_deviation_limit:
-                unfit_reason = (
-                    f"원본 대비 band_gap 편차 {dev*100:.0f}% (한계 {bg_deviation_limit*100:.0f}%)"
-                )
-        unfit = unfit_reason is not None
+            suit_risk, suit_reason = _source_relative_suitability_score(cand_bg, src_bg)
+
+        unfit = suit_risk >= SUITABILITY_UNFIT_THRESHOLD
+        unfit_reason = suit_reason if unfit else None
 
         if unfit and exclude_unfit:
             excluded.append(cformula)
@@ -151,7 +157,7 @@ def rank_alternatives(
         suitability = "적합도 낮음" if unfit else "적합"
         tradeoff = _band_gap_tradeoff(src_bg, cand_bg)
         if unfit:
-            warn = f"[응용 적합도 낮음] {unfit_reason}"
+            warn = f"[적합도 낮음] {unfit_reason}"
             tradeoff = f"{warn}. {tradeoff}" if tradeoff else warn
 
         ranked.append(
@@ -166,6 +172,7 @@ def rank_alternatives(
                     "is_stable": cand.get("is_stable"),
                     "material_id": cid,
                     "suitability": suitability,
+                    "suitability_risk": round(suit_risk, 1),
                     "band_gap_deviation": round(dev, 3) if dev is not None else None,
                 },
                 improvement=(
@@ -178,22 +185,25 @@ def rank_alternatives(
             )
         )
 
-    # 정렬: 적합한 후보 우선 → 리스크 오름차순 → band_gap 근접도
+    # 정렬: 적합한 후보 우선 → 종합 리스크 오름차순 → 적합성 리스크(완만) → band_gap 근접도.
+    # 적합성 리스크를 연속값으로 정렬 보조에 써서 '적합/부적합' 이진 경계에서도
+    # 순위가 급변하지 않고 완만하게 이어지도록 한다.
     def _sort_key(rc: RankedCandidate):
         unfit_flag = 1 if rc.metrics.get("suitability") == "적합도 낮음" else 0
+        suit_risk = rc.metrics.get("suitability_risk") or 0.0
         bg = rc.metrics.get("band_gap")
         bg_dist = abs(bg - src_bg) if (bg is not None and src_bg is not None) else 1e9
-        return (unfit_flag, rc.score, bg_dist)
+        return (unfit_flag, rc.score, suit_risk, bg_dist)
 
     ranked.sort(key=_sort_key)
 
     if not ranked and not excluded:
         notes.append("대체 후보를 찾지 못함")
     if excluded:
-        notes.append(f"응용 적합성 미달로 제외된 후보: {', '.join(excluded)}")
+        notes.append(f"적합성 미달로 제외된 후보: {', '.join(excluded)}")
     unfit_kept = [c.name for c in ranked if c.metrics.get("suitability") == "적합도 낮음"]
     if unfit_kept:
-        notes.append(f"응용 적합도 낮음(참고): {', '.join(unfit_kept)}")
+        notes.append(f"적합도 낮음(참고): {', '.join(unfit_kept)}")
 
     return AlternativesResult(candidates=ranked[:k], notes=notes)
 

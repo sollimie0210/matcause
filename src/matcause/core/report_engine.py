@@ -14,7 +14,7 @@ from __future__ import annotations
 from .interfaces import ReportTemplate
 from .llm.base import LLMClient, system, user
 from .llm.prompts import SYSTEM_GUARDRAIL
-from .models import Evidence, IssueRequest, Report
+from .models import Evidence, IssueRequest, Report, TriageResult
 
 _SUMMARY_PROMPT = """\
 아래는 결함 원인 분석 리포트의 구조화 데이터다. 이를 2~3문장의 한국어 경영진 요약으로
@@ -43,9 +43,10 @@ class ReportEngine:
         finding,
         issue: IssueRequest,
         refs: list[Evidence],
+        triage: TriageResult | None = None,
     ) -> Report:
         # 1) 구조화 리포트 생성 (템플릿)
-        report = template.render(finding, issue, refs)
+        report = template.render(finding, issue, refs, triage=triage)
 
         # 2) LLM 서술 보강 (실패해도 리포트는 유효)
         narrative = self._narrate(report, refs)

@@ -75,6 +75,8 @@ li {{ margin: 2px 0; }}
 hr {{ border: none; border-top: 1px solid #ccc; margin: 12px 0; }}
 .footnote {{ color: #666; font-style: italic; font-size: 10px; }}
 strong {{ font-family: {family}; font-weight: bold; color: #000; }}
+.mc-chart {{ margin: 10px 0 14px 0; text-align: left; }}
+.mc-chart img {{ max-width: 100%; border: 1px solid #E4E9F2; border-radius: 6px; padding: 6px; }}
 """
 
 
@@ -103,6 +105,12 @@ def markdown_to_html(md: str, title: str = "MatCause Report") -> str:
             close_ul()
             level = len(m.group(1))
             out.append(f"<h{level}>{_inline(m.group(2))}</h{level}>")
+            continue
+        m = re.match(r"^!\[(.*?)\]\((.*?)\)$", line.strip())
+        if m:
+            close_ul()
+            alt, src = m.group(1), m.group(2)
+            out.append(f'<div class="mc-chart"><img src="{html.escape(src, quote=True)}" alt="{html.escape(alt)}"/></div>')
             continue
         m = re.match(r"^(\s*)([-*]|\d+\.)\s+(.*)$", line)
         if m:
@@ -134,6 +142,9 @@ def _link_callback(uri: str, rel):
 
     file:// URI 및 폰트 파일명을 assets/fonts 의 실제 경로로 변환한다.
     """
+    # data: URI(임베드된 차트 이미지)는 그대로 xhtml2pdf 내부 로더에 맡긴다.
+    if uri.startswith("data:"):
+        return uri
     # file:// URI 처리
     if uri.startswith("file:"):
         from urllib.parse import unquote, urlparse

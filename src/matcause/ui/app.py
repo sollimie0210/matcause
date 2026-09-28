@@ -2,7 +2,8 @@
 
 레이아웃:
   - 상단 바: 왼쪽 MATCAUSE 로고, 오른쪽 네비게이션(진단·요약·보관함) + 로그인
-  - 진단: 히어로 슬라이드(소자/공정 이미지 순환) + 에이전트 소개 + 이슈 입력/분석
+  - 진단: 히어로 배너(순수 CSS 그라디언트, 오프라인 데모에서도 항상 동일하게 렌더됨)
+    + 에이전트 소개 + 이슈 입력/분석
   - 요약: 진단 집계 대시보드
   - 보관함: 리포트 열람/내보내기
 
@@ -17,7 +18,9 @@ import pandas as pd
 import streamlit as st
 
 from matcause.app_service import get_service
+from matcause.core.config import get_settings
 from matcause.core.models import DiagnosisStatus
+from matcause.core.orchestrator import DiagnoseStep
 
 # ─────────────────────────── 컬러 ───────────────────────────
 
@@ -25,12 +28,47 @@ NAVY = "#1B2A4A"
 NAVY_DEEP = "#12203C"
 NAVY_SOFT = "#2E4370"
 ACCENT = "#4C6FBF"
+TEAL = "#0E7C86"
+SLATE = "#6B7280"
+WARN = "#C77B30"
 BG = "#F4F6FA"
 
+# 분기별로 항상 같은 색을 쓴다(고정 순서) — 소재=남색(차가움), 공정=청록(차가움/구분),
+# 모호=중립 회색(불확실함을 시각적으로도 표현). 세 값 모두 파란 계열로 뭉쳐 있던
+# 이전 배색보다 한눈에 구분되도록 정리함.
 _CATEGORY_META = {
     "MATERIAL": {"label": "소재 요인", "color": NAVY, "emoji": "🔷"},
-    "PROCESS": {"label": "공정 요인", "color": ACCENT, "emoji": "🔶"},
-    "AMBIGUOUS": {"label": "모호 (양경로 검토)", "color": NAVY_SOFT, "emoji": "🔸"},
+    "PROCESS": {"label": "공정 요인", "color": TEAL, "emoji": "🔶"},
+    "AMBIGUOUS": {"label": "모호 (양경로 검토)", "color": SLATE, "emoji": "🔸"},
+}
+
+_RISK_METRIC_LABEL = {
+    "energy_above_hull": "구조 안정성",
+    "formation_energy_per_atom": "형성 에너지",
+    "is_stable": "열역학적 안정성",
+    "application_suitability": "응용 적합성",
+}
+
+_RISK_METRIC_EXPLAIN = {
+    "energy_above_hull": (
+        "Materials Project는 특정 점결함(vacancy 등)의 형성 에너지를 직접 제공하지 않아 "
+        "안정성 프록시로 energy_above_hull(경쟁 상 대비 에너지 차, eV/atom)을 사용합니다. "
+        "0.0 이하면 리스크 0, 0.1 eV/atom 이상이면 리스크 100 — 그 사이는 선형으로 환산합니다."
+    ),
+    "formation_energy_per_atom": (
+        "화합물이 구성 원소 상태보다 얼마나 형성되기 유리한지를 나타내는 값(eV/atom)입니다. "
+        "-0.1 이하(형성에 유리)면 리스크 0, 0.0 이상(형성에 불리)이면 리스크 100으로 "
+        "선형 환산합니다. 순수 원소는 정의상 형성 에너지가 0이라 이 지표에서 제외됩니다."
+    ),
+    "is_stable": (
+        "Materials Project가 제공하는 안정성 플래그입니다. 불안정(False)이면 리스크 100, "
+        "안정(True)이면 리스크 0을 부여합니다."
+    ),
+    "application_suitability": (
+        "감지된 응용 분야(파워·LED·로직·유전체 등)가 요구하는 band_gap 범위를 얼마나 "
+        "벗어났는지를 리스크로 환산합니다. 요구 범위 안이면 0이고, 경계에서부터 완만하게 "
+        "증가해 범위 폭의 약 30% 이상 벗어나면 100에 가까워집니다(계단식으로 튀지 않음)."
+    ),
 }
 
 _EXAMPLE = (
@@ -38,22 +76,10 @@ _EXAMPLE = (
     "클레임이 접수됨. 동일 공정 조건에서 생산됐으나 소재 물성 편차가 의심됨."
 )
 
-_HERO_IMAGES = [
-    "https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=1400&q=80",
-    "https://images.unsplash.com/photo-1518770660439-4636190af475?w=1400&q=80",
-    "https://images.unsplash.com/photo-1562408590-e32931084e23?w=1400&q=80",
-    "https://images.unsplash.com/photo-1630752708714-2418cee3e7e4?w=1400&q=80",
-]
-
 
 # ─────────────────────────── CSS ───────────────────────────
 
 def _inject_styles() -> None:
-    hero_kf = "\n".join(
-        f"{int(i * 100 / len(_HERO_IMAGES))}% {{ background-image: url('{u}'); }}"
-        for i, u in enumerate(_HERO_IMAGES)
-    ) + f"\n100% {{ background-image: url('{_HERO_IMAGES[0]}'); }}"
-
     st.markdown(f"""
     <style>
     /* ── 글로벌 ── */
@@ -62,19 +88,18 @@ def _inject_styles() -> None:
     section[data-testid="stSidebar"] {{ display:none !important; }}
     .block-container {{ padding-top: 0 !important; max-width: 1260px; }}
 
-    /* ── 히어로 슬라이드쇼 ── */
-    @keyframes mc-hero-slide {{ {hero_kf} }}
+    /* ── 히어로 배너 (순수 CSS 그라디언트 + 은은한 대각선 패턴, 외부 이미지 의존 없음
+       → 네트워크 없는 오프라인 데모에서도 항상 동일하게 렌더됨) ── */
     .mc-hero-banner {{
-        position: relative; width: 100%; height: 380px; overflow: hidden;
+        position: relative; width: 100%; min-height: 300px; overflow: hidden;
         border-radius: 0 0 20px 20px;
-        animation: mc-hero-slide {len(_HERO_IMAGES)*5}s ease-in-out infinite;
-        background-size: cover; background-position: center;
+        background:
+            repeating-linear-gradient(115deg, rgba(255,255,255,0.05) 0 2px, transparent 2px 42px),
+            linear-gradient(135deg, {NAVY_DEEP} 0%, {NAVY} 55%, {NAVY_SOFT} 100%);
     }}
     .mc-hero-overlay {{
-        position:absolute; inset:0;
-        background: linear-gradient(180deg, rgba(18,32,60,0.62) 0%, rgba(27,42,74,0.88) 100%);
-        display:flex; flex-direction:column; justify-content:center;
-        padding: 2.8rem 3.5rem;
+        position:relative; display:flex; flex-direction:column; justify-content:center;
+        padding: 2.8rem 3.5rem; min-height: 300px;
     }}
     .mc-hero-overlay h1 {{
         color:#fff; font-size:2.6rem; font-weight:900; letter-spacing:0.06em;
@@ -82,6 +107,11 @@ def _inject_styles() -> None:
     }}
     .mc-hero-overlay p {{
         color:#cdd6ea; font-size:1.05rem; max-width:600px; line-height:1.7; margin:0;
+    }}
+    .mc-mock-badge {{
+        display:inline-block; margin-top:1rem; padding:0.3rem 0.8rem; border-radius:999px;
+        background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.35);
+        color:#fff; font-size:0.8rem; font-weight:700; letter-spacing:0.04em;
     }}
 
     /* ── CSS-only 등장 애니메이션 (JS 불필요) ── */
@@ -121,11 +151,18 @@ def _inject_styles() -> None:
     .mc-feat-card p {{ color:#5A6B8A; font-size:0.88rem; line-height:1.6; }}
 
     /* ── 공용 ── */
+    /* 흰 배경 카드 안 텍스트는 항상 짙은 색으로 고정한다. 테마를 라이트로
+       잠갔어도(위 config.toml) 이중 안전장치로 남겨 둠 — 카드 배경은 흰색으로
+       하드코딩돼 있는데 글자색을 명시하지 않으면, 뷰어 쪽에서 다크 테마가
+       적용될 경우 기본 글자색(밝은 색)이 흰 배경과 겹쳐 안 보이는 문제가 있었음. */
     .mc-card {{
         background:#fff; border:1px solid #E4E9F2; border-radius:14px;
         padding:1.2rem 1.4rem; box-shadow:0 4px 14px rgba(27,42,74,0.06);
-        margin-bottom:1rem;
+        margin-bottom:1rem; color:#1F2937;
     }}
+    .mc-card [data-testid="stMarkdownContainer"] p,
+    .mc-card [data-testid="stMarkdownContainer"] li,
+    .mc-card [data-testid="stMarkdownContainer"] strong {{ color:#1F2937; }}
     .mc-stat {{ text-align:center; }}
     .mc-stat .v {{ font-size:2rem; font-weight:800; color:{NAVY}; line-height:1.1; }}
     .mc-stat .l {{ color:{NAVY_SOFT}; font-size:0.85rem; margin-top:0.2rem; }}
@@ -152,15 +189,15 @@ def _inject_styles() -> None:
     /* ── 버튼 ── */
     .stButton > button[kind="primary"] {{ background:{NAVY}; border:0; border-radius:10px; font-weight:700; }}
     .stButton > button[kind="primary"]:hover {{ background:{NAVY_DEEP}; }}
-    .stDownloadButton > button {{ background:#fff; color:{NAVY}; border:1.5px solid {NAVY}; border-radius:10px; font-weight:700; }}
-    .stDownloadButton > button:hover {{ background:{NAVY}; color:#fff; }}
 
-    /* ── 다운로드 버튼: 크고 또렷하게 ── */
+    /* 다운로드 버튼: 크고 또렷하게 (이전엔 이 규칙이 3곳에 중복/충돌돼 있어 마지막
+       규칙이 의도치 않게 크기를 다시 줄이고 있었음 — 하나로 정리) */
     .stDownloadButton > button {{
-        min-height: 3.4rem !important;
-        font-size: 1.18rem !important;
+        background:#fff; color:{NAVY}; border:1.5px solid {NAVY}; border-radius:10px;
+        font-weight:700; min-height: 3.4rem !important; font-size: 1.18rem !important;
         padding: 0.7rem 1.4rem !important;
     }}
+    .stDownloadButton > button:hover {{ background:{NAVY}; color:#fff; }}
     .stDownloadButton > button p {{ font-size: 1.18rem !important; font-weight: 800 !important; }}
 
     /* 선택 안 된 세그먼트(secondary) 버튼 = 리포트 전환 버튼: 남색 테두리 또렷 */
@@ -229,14 +266,6 @@ def _inject_styles() -> None:
         font-size:1rem; font-weight:800; margin-right:0.7rem;
     }}
     @media (max-width: 1500px) {{ .mc-rail {{ display:none; }} }}
-
-    /* ── 다운로드 버튼 키움 ── */
-    .stDownloadButton > button {{
-        padding: 0.7rem 1.6rem !important;
-        font-size: 0.98rem !important;
-        min-height: 3rem;
-    }}
-    .stDownloadButton > button p {{ font-size: 0.98rem !important; font-weight: 700 !important; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -275,12 +304,19 @@ def _navbar() -> None:
 # ─────────────────────────── 히어로 + 소개 ───────────────────────────
 
 def _hero_section() -> None:
+    mock_badge = ""
+    try:
+        if get_settings().llm_provider.strip().lower() != "gateway":
+            mock_badge = '<div class="mc-mock-badge">⚙ MOCK 모드 — 규칙 기반 폴백으로 동작 중 (실 LLM 미연동)</div>'
+    except Exception:  # noqa: BLE001
+        pass
     st.markdown(f"""
-    <div class="mc-hero-banner" style="background-image:url('{_HERO_IMAGES[0]}');">
+    <div class="mc-hero-banner">
         <div class="mc-hero-overlay">
             <h1>결함 원인, 근거로 판별합니다</h1>
             <p>소재 물성부터 공정 센서 이상까지 — 이슈를 입력하면 AI가 경로를 분류하고,
             데이터 근거와 함께 리포트를 생성합니다.</p>
+            {mock_badge}
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -435,6 +471,10 @@ def _render_triage(triage) -> None:
 
 def _render_material(finding) -> None:
     _eyebrow("Step 03", "소재 분석 근거", anchor="step3")
+    st.caption(
+        "**리스크란?** 이 소재가 불량의 원인일 가능성을 0~100 으로 정량화한 값입니다. "
+        "값이 높을수록 소재 요인이 의심되며, 여러 물성 지표를 가중합해 산출합니다."
+    )
     c1, c2 = st.columns([1, 2])
     with c1:
         st.metric("소재 리스크", f"{finding.risk_score:.1f} / 100")
@@ -449,11 +489,20 @@ def _render_material(finding) -> None:
         if finding.breakdown:
             st.markdown("**지표별 리스크 기여**")
             bd = pd.DataFrame(
-                {"지표": list(finding.breakdown.keys()),
+                {"지표": [_RISK_METRIC_LABEL.get(k, k) for k in finding.breakdown],
                  "리스크(0~100)": list(finding.breakdown.values())}
             ).set_index("지표")
             st.bar_chart(bd, color=NAVY)
         st.caption(finding.summary)
+
+    if finding.breakdown:
+        with st.expander("🧮 각 지표는 어떻게 계산되나요?"):
+            for k in finding.breakdown:
+                explain = _RISK_METRIC_EXPLAIN.get(k)
+                if not explain:
+                    continue
+                label = _RISK_METRIC_LABEL.get(k, k)
+                st.markdown(f"**{label}** ({k})  \n{explain}")
 
     if finding.ranked_candidates:
         st.markdown("**대체 소재 후보 (리스크 오름차순)**")
@@ -489,6 +538,11 @@ def _render_process(finding) -> None:
     top_vars = st_.get("top_vars", [])
     if top_vars:
         st.markdown("**효과크기 상위 이상 변수 (FDR 유의)**")
+        d_df = pd.DataFrame(
+            {"변수": [tv["feature"] for tv in top_vars],
+             "Cohen's d": [tv["cohens_d"] for tv in top_vars]}
+        ).set_index("변수")
+        st.bar_chart(d_df, color=TEAL)
         dir_kr = {"higher_in_fail": "불량군 ↑", "lower_in_fail": "불량군 ↓"}
         rows = [
             {"변수": tv["feature"],
@@ -620,13 +674,31 @@ def page_diagnose() -> None:
             return
         st.session_state["issue_text"] = text
         ov = None if override == "자동(Triage)" else override
-        with st.spinner("진단 중…"):
-            try:
-                dx = get_service().diagnose(text, override=ov)
-                st.session_state["diagnosis_id"] = dx.id
-            except Exception as exc:  # noqa: BLE001
-                st.exception(exc)
-                return
+
+        # 실제 각 단계(Triage → 도메인 분석 → 리포트) 시작 직전에 Orchestrator 가
+        # 호출하는 콜백이라, 정적 딜레이가 아니라 실제 진행 상황과 동기화된다.
+        progress_ph = st.empty()
+        _STEP_LABELS = {
+            DiagnoseStep.TRIAGE: "🔎 1/3 이슈 분석 중…",
+            DiagnoseStep.ANALYZE: "📚 2/3 근거 수집 중…",
+            DiagnoseStep.REPORT: "📝 3/3 리포트 작성 중…",
+        }
+
+        def _on_step(step: str) -> None:
+            label = _STEP_LABELS.get(step, step)
+            progress_ph.markdown(
+                f'<div class="mc-card" style="text-align:center; font-weight:700; color:{NAVY};">{label}</div>',
+                unsafe_allow_html=True,
+            )
+
+        try:
+            dx = get_service().diagnose(text, override=ov, on_step=_on_step)
+            st.session_state["diagnosis_id"] = dx.id
+        except Exception as exc:  # noqa: BLE001
+            st.exception(exc)
+            return
+        finally:
+            progress_ph.empty()
 
     dx_id = st.session_state.get("diagnosis_id")
     if not dx_id:

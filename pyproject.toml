@@ -21,6 +21,7 @@ dependencies = [
     "streamlit>=1.36",        # 데모 대시보드
     "pandas>=2.2",
     "numpy>=1.26",
+    "matplotlib>=3.8",       # 리포트 차트(고객사/상세 PDF) 생성
     "httpx>=0.27",
     "pyyaml>=6.0",
     "xhtml2pdf>=0.2.16",     # 순수 파이썬 PDF 생성(외부 바이너리 불필요)

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from .interfaces import DomainPlugin
 from .models import (
     Diagnosis,
@@ -25,6 +27,18 @@ from .models import (
     TriageCategory,
     TriageResult,
 )
+
+# diagnose() 의 on_step 콜백에 전달되는 단계 이름. UI(app.py)는 이를 사용자용
+# 문구("🔎 1/3 이슈 분석 중…" 등)로 매핑한다. 콜백은 실제 각 단계 시작 직전에
+# 호출되므로, 오래 걸리는 실제 작업(Triage LLM 호출, MP/SECOM 조회, 리포트
+# LLM 서술)과 동기화된 진행 상황을 보여준다(가짜 딜레이가 아님).
+class DiagnoseStep:
+    TRIAGE = "triage"
+    ANALYZE = "analyze"
+    REPORT = "report"
+
+
+OnStepCallback = Callable[[str], None]
 
 
 class Orchestrator:
@@ -43,11 +57,22 @@ class Orchestrator:
         self._report_kind = report_kind
 
     def diagnose(
-        self, issue: IssueRequest, override: TriageCategory | None = None
+        self,
+        issue: IssueRequest,
+        override: TriageCategory | None = None,
+        on_step: OnStepCallback | None = None,
     ) -> Diagnosis:
+        def notify(step: str) -> None:
+            if on_step is not None:
+                try:
+                    on_step(step)
+                except Exception:  # noqa: BLE001 - UI 콜백 오류가 진단을 막지 않음
+                    pass
+
         dx = Diagnosis(issue=issue)
 
         # 1) Triage (override 우선)
+        notify(DiagnoseStep.TRIAGE)
         if override is not None:
             dx.triage = TriageResult(
                 category=override, confidence=1.0, rationale="사용자 수동 지정"
@@ -57,6 +82,7 @@ class Orchestrator:
         dx.touch(DiagnosisStatus.TRIAGED)
 
         # 2) 경로 분석
+        notify(DiagnoseStep.ANALYZE)
         dx.touch(DiagnosisStatus.ANALYZING)
         try:
             finding = self._run_path(issue, dx.triage.category)
@@ -72,8 +98,9 @@ class Orchestrator:
             dx.process_finding = finding
 
         # 3) 리포트
+        notify(DiagnoseStep.REPORT)
         try:
-            dx.report = self._build_report(issue, finding)
+            dx.report = self._build_report(issue, finding, dx.triage)
             dx.touch(DiagnosisStatus.REPORTED)
         except Exception as exc:  # noqa: BLE001
             dx.error = f"리포트 생성 실패: {exc}"
@@ -90,13 +117,13 @@ class Orchestrator:
         # MATERIAL 또는 AMBIGUOUS → 소재 경로 우선(3-A 핵심 강점)
         return self._plugin.material_analyzer().analyze(issue)
 
-    def _build_report(self, issue: IssueRequest, finding) -> Report:
+    def _build_report(self, issue: IssueRequest, finding, triage: TriageResult | None = None) -> Report:
         template = self._plugin.report_template(self._report_kind)
         refs = list(getattr(finding, "evidences", []))
         # 대체 후보 근거도 추적성에 포함
         for c in getattr(finding, "ranked_candidates", []) or []:
             refs += c.evidences
-        return self._report_engine.build(template, finding, issue, refs)
+        return self._report_engine.build(template, finding, issue, refs, triage=triage)
 
     def _persist(self, dx: Diagnosis) -> None:
         if self._store is not None:

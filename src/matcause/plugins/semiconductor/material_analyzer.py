@@ -21,7 +21,7 @@ from matcause.core.models import (
 )
 
 from .alternatives_ranker import candidate_formulas_for_group, rank_alternatives
-from .application_profile import detect_application
+from .application_profile import classify_application
 from .material_extractor import extract_materials
 from .mp_connector import MpConnector, MpConnectorError
 from .risk_scorer import score_material
@@ -59,8 +59,9 @@ class SemiconductorMaterialAnalyzer:
 
         formula = extraction.primary_formula()
         group = extraction.material_group
-        # 응용 감지(파워/LED/로직/유전체 등) → 응용 적합성 반영
-        profile = detect_application(text)
+        # 응용 분류(파워/LED/로직/유전체 등) → 응용 적합성 반영.
+        # 실제 LLM 모드는 문맥 기반 LLM 분류, Mock 모드는 키워드 폴백을 사용한다.
+        profile = classify_application(text, self._llm)
 
         # 2) MP 조회
         try:

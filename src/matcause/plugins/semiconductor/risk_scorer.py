@@ -85,47 +85,44 @@ def _ev(source_ref: str, value: Any, unit: str | None, note: str) -> Evidence:
     )
 
 
-def _application_suitability_score(
-    bg: float | None, profile: ApplicationProfile
-) -> tuple[float, str]:
-    """band_gap 이 응용 요구 범위를 벗어난 정도를 0~100 리스크로 환산.
+# 범위 폭의 이 비율만큼 벗어나면 리스크 100. 두 경로(감지/폴백)가 공유하는 단일 원칙.
+MARGIN_FRAC = 0.3
 
-    설계:
+
+def _range_relative_risk(
+    bg: float, lo: float | None, hi: float | None
+) -> tuple[float, float, float, float | None]:
+    """범위 [lo, hi] 기준 band_gap 편차를 0~100 리스크로 환산하는 **공통 커널**.
+
+    감지 경로(응용 프로파일 범위)와 폴백 경로(원본 소재 주변 허용밴드)가 **동일한**
+    수학 원칙을 쓰도록 하는 단일 함수다:
       - 범위 안이면 0.
-      - 범위 밖이면, **가장 가까운 경계로부터의 거리**를 **범위 폭** 대비 비율로
-        계산(range-relative deviation). 이전 midpoint 대비 방식은 범위 경계 근처
-        에서 과도하게 높은 편차를 냈음 (예: bg=2.2, 하한=2.3이면 0.1eV 밖인데
-        midpoint 4.4 대비 50% 편차 → 100점이 됨. 실제로는 범위 폭 4.2 대비
-        2.4% 밖일 뿐).
-      - 경계에서 급격히 튀지 않도록 **부드러운 증가** 적용:
-        score = clamp( (distance / range_width) / margin_frac * 100 )
-        margin_frac = 0.3 이면 범위 폭의 30% 벗어날 때 100점.
-        범위 경계에서 0, 경계 밖으로 갈수록 선형 증가 → 자연스러움.
+      - 범위 밖이면 **가장 가까운 경계로부터의 거리**를 **범위 폭** 대비로 재고,
+        경계에서 0 → 완만한 선형 증가(범위 폭의 MARGIN_FRAC 밖에서 100).
+      - 경계에서 계단식(0→100)으로 튀지 않는다. midpoint 대비 방식(옛 버그) 미사용.
+
+    반환: (score, distance, span, boundary)  — boundary 는 범위 안이면 None.
     """
-    MARGIN_FRAC = 0.3  # 범위 폭의 30% 밖 → 리스크 100
-
-    if bg is None:
-        return 0.0, "band_gap 없음 → 응용 적합성 평가 불가"
-
-    lo = profile.band_gap_min
-    hi = profile.band_gap_max
-
-    # 범위 안이면 적합
-    if profile.band_gap_in_range(bg):
-        return 0.0, f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 범위 내 → 적합"
-
-    # 범위 폭 계산 (한쪽만 있으면 대표값 기준 ±50% 를 가상 범위로)
+    # 범위 폭(스케일). 양측이면 hi-lo, 한쪽만이면 그 값 자체를 스케일로.
     if lo is not None and hi is not None:
         span = hi - lo
     elif lo is not None:
-        span = lo   # 단측: 하한만 → 하한 자체를 범위 스케일로
+        span = lo
     elif hi is not None:
         span = hi
     else:
-        span = 1.0  # 둘 다 없으면 불가 (이론상 도달 안 함)
-
+        span = 1.0
     if span <= 0:
         span = 1.0
+
+    # 범위 안이면 적합(리스크 0)
+    in_range = True
+    if lo is not None and bg < lo:
+        in_range = False
+    if hi is not None and bg > hi:
+        in_range = False
+    if in_range:
+        return 0.0, 0.0, span, None
 
     # 가장 가까운 경계로부터의 거리
     if lo is not None and bg < lo:
@@ -143,12 +140,70 @@ def _application_suitability_score(
         margin = 1.0
 
     score = _clamp(distance / margin * 100.0)
-    pct = distance / span * 100.0
+    return score, distance, span, boundary
 
+
+def _application_suitability_score(
+    bg: float | None, profile: ApplicationProfile
+) -> tuple[float, str]:
+    """band_gap 이 응용 요구 범위를 벗어난 정도를 0~100 리스크로 환산 (감지 경로).
+
+    실제 계산은 공통 커널 `_range_relative_risk` 에 위임한다. 폴백 경로도 같은 커널을
+    쓰므로 두 경로가 동일한 원칙(경계 대비 + 완만한 증가)을 공유한다.
+    """
+    if bg is None:
+        return 0.0, "band_gap 없음 → 응용 적합성 평가 불가"
+
+    lo = profile.band_gap_min
+    hi = profile.band_gap_max
+
+    score, distance, span, boundary = _range_relative_risk(bg, lo, hi)
+    if boundary is None:
+        return 0.0, f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 범위 내 → 적합"
+
+    pct = distance / span * 100.0
     return score, (
-        f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 "
+        f"band_gap {bg:.2f} eV, 응용({profile.name}) 요구 band_gap "
         f"[{lo}~{hi}] 경계({boundary})에서 {distance:.2f} eV 벗어남 "
         f"(범위 폭 {span:.1f} 대비 {pct:.1f}%) → 적합성 리스크 {score:.0f}/100"
+    )
+
+
+# 폴백(응용 미감지) 시 원본 band_gap 주변에 두는 허용밴드의 반폭 비율.
+# 원본의 ±(이 비율)을 '요구 범위'로 간주해 공통 커널로 완만하게 판정한다.
+FALLBACK_TOLERANCE_FRAC = 0.25  # 원본 대비 ±25% 를 적합 범위로
+
+
+def _source_relative_suitability_score(
+    cand_bg: float | None, source_bg: float | None
+) -> tuple[float, str]:
+    """[폴백 경로] 응용 프로파일이 없을 때, 원본 소재 대비 후보 band_gap 적합성.
+
+    감지 경로와 **같은 원칙**을 쓴다: 원본 band_gap 주변에 ±FALLBACK_TOLERANCE_FRAC
+    허용밴드를 두고, 그 범위를 공통 커널 `_range_relative_risk` 에 넘긴다. 따라서
+    - 허용밴드 안이면 0,
+    - 밖이면 경계에서 완만하게 증가(계단식 아님),
+    - 편차는 '밴드 폭 대비' 상대값(옛 원본 대비 50% 하드컷 방식 폐기).
+    극단적으로 응용이 모호한 케이스에서도 0→100 으로 튀지 않는다.
+    """
+    if cand_bg is None or source_bg is None or source_bg <= 0:
+        return 0.0, "band_gap 정보 부족 → 적합성 평가 불가(폴백)"
+
+    tol = abs(source_bg) * FALLBACK_TOLERANCE_FRAC
+    lo = source_bg - tol
+    hi = source_bg + tol
+
+    score, distance, span, boundary = _range_relative_risk(cand_bg, lo, hi)
+    if boundary is None:
+        return 0.0, (
+            f"band_gap {cand_bg:.2f} eV, 원본 {source_bg:.2f} eV 대비 "
+            f"허용밴드[{lo:.2f}~{hi:.2f}] 내 → 적합"
+        )
+    pct = distance / span * 100.0
+    return score, (
+        f"band_gap {cand_bg:.2f} eV, 원본 {source_bg:.2f} eV 대비 "
+        f"허용밴드[{lo:.2f}~{hi:.2f}] 경계({boundary:.2f})에서 {distance:.2f} eV 벗어남 "
+        f"(밴드 폭 {span:.2f} 대비 {pct:.1f}%) → 적합성 리스크 {score:.0f}/100"
     )
 
 

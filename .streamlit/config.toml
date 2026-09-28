@@ -1,0 +1,11 @@
+# MatCause UI는 고정된 브랜드 라이트 테마(남색/흰색)로 디자인되어 있고,
+# 사이드바/기본 헤더도 숨겨 자체 네비게이션만 쓴다. 뷰어의 OS/브라우저가
+# 다크 모드여도 Streamlit이 다크 테마로 렌더하면, 커스텀 흰 배경 카드
+# (.mc-card 등) 위에 밝은 기본 글자색이 얹혀 텍스트가 안 보이는 문제가
+# 생긴다. 테마를 라이트로 고정해 근본 원인을 막는다.
+[theme]
+base = "light"
+primaryColor = "#1B2A4A"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1F2937"

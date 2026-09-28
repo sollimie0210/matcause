@@ -45,7 +45,7 @@ def test_customer_template_hides_evidence_ids():
     # 부록 안내 문구 포함
     assert "상세 리포트" in report.markdown
     # 핵심 섹션 포함
-    for section in ("개요", "판정 원인", "소재 리스크", "대체 소재", "권장 조치"):
+    for section in ("현재 상황", "판정 원인", "소재 리스크", "대체 소재", "권장 조치"):
         assert section in report.markdown
     # 근거 데이터 자체는 보관됨(부록용)
     assert report.evidences

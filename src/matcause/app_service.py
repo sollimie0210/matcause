@@ -87,14 +87,16 @@ class DiagnosisService:
         )
         self._store: dict[str, Diagnosis] = {}
 
-    def diagnose(self, text: str, override: str | None = None) -> Diagnosis:
+    def diagnose(
+        self, text: str, override: str | None = None, on_step=None
+    ) -> Diagnosis:
         cat = None
         if override:
             try:
                 cat = TriageCategory(override.upper())
             except ValueError:
                 cat = None
-        dx = self._orch.diagnose(IssueRequest(raw_text=text), override=cat)
+        dx = self._orch.diagnose(IssueRequest(raw_text=text), override=cat, on_step=on_step)
         self._store[dx.id] = dx
         return dx
 
@@ -118,7 +120,7 @@ class DiagnosisService:
             refs += c.evidences
         template = self._plugin.report_template("CUSTOMER")
         engine = ReportEngine(self._llm)
-        return engine.build(template, finding, dx.issue, refs)
+        return engine.build(template, finding, dx.issue, refs, triage=dx.triage)
 
     def customer_report_pdf(self, diagnosis_id: str) -> bytes | None:
         """고객사 제출용 리포트를 PDF 바이트로 반환한다."""

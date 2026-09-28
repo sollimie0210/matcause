@@ -1,0 +1,14 @@
+[Unit]
+Description=MatCause Streamlit UI
+After=network.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=__APP_DIR__/.env
+ExecStart=__APP_DIR__/.venv/bin/streamlit run src/matcause/ui/app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

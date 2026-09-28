@@ -20,6 +20,7 @@ from .models import (
     MaterialFinding,
     ProcessFinding,
     Report,
+    TriageResult,
 )
 
 
@@ -42,7 +43,13 @@ class KnowledgeBase(Protocol):
 
 @runtime_checkable
 class ReportTemplate(Protocol):
-    def render(self, finding, issue: IssueRequest, refs: list[Evidence]) -> Report: ...
+    def render(
+        self,
+        finding,
+        issue: IssueRequest,
+        refs: list[Evidence],
+        triage: TriageResult | None = None,
+    ) -> Report: ...
 
 
 @runtime_checkable
