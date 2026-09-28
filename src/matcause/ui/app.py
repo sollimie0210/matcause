@@ -310,16 +310,15 @@ def _hero_section() -> None:
             mock_badge = '<div class="mc-mock-badge">⚙ MOCK 모드 — 규칙 기반 폴백으로 동작 중 (실 LLM 미연동)</div>'
     except Exception:  # noqa: BLE001
         pass
-    st.markdown(f"""
-    <div class="mc-hero-banner">
-        <div class="mc-hero-overlay">
-            <h1>결함 원인, 근거로 판별합니다</h1>
-            <p>소재 물성부터 공정 센서 이상까지 — 이슈를 입력하면 AI가 경로를 분류하고,
-            데이터 근거와 함께 리포트를 생성합니다.</p>
-            {mock_badge}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="mc-hero-banner"><div class="mc-hero-overlay">'
+        "<h1>결함 원인, 근거로 판별합니다</h1>"
+        "<p>소재 물성부터 공정 센서 이상까지 — 이슈를 입력하면 AI가 경로를 분류하고, "
+        "데이터 근거와 함께 리포트를 생성합니다.</p>"
+        f"{mock_badge}"
+        "</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def _about_section() -> None:
